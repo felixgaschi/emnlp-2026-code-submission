@@ -1,3 +1,5 @@
+import shutil
+
 from transformers import (
     AutoModelForTokenClassification,
     AutoModelForSequenceClassification,
@@ -5,6 +7,7 @@ from transformers import (
     DataCollatorWithPadding,
     DataCollatorForTokenClassification,
     AutoConfig,
+    AutoModel,
 )
 
 
@@ -24,6 +27,8 @@ from multilingual_eval.models.with_realignment_factory import (
     AutoModelForTokenClassificationWithRealignment,
     AutoModelForQuestionAnsweringWithRealignment,
 )
+
+from multilingual_eval.models.simplified import get_automodel_replacement
 
 
 def get_dataset_fn(name, zh_segmenter=None):
@@ -54,31 +59,49 @@ def get_dataset_metric_fn(name):
         "xquad": lambda: get_question_answering_metrics(),
     }[name]
 
+def llama_qa_hotfix(save_dir: str):
+    """
+    This hotfix is necessary for handling a bug with old version of
+    transformers, see:
+    https://github.com/huggingface/transformers/issues/30381#issuecomment-2247122579
+    """
 
-def get_model_class_for_dataset_with_realignment(name):
-    return {
-        "wikiann": AutoModelForTokenClassificationWithRealignment,
-        "udpos": AutoModelForTokenClassificationWithRealignment,
-        "xtreme.udpos": AutoModelForTokenClassificationWithRealignment,
-        "xnli": AutoModelForSequenceClassificationWithRealignment,
-        "pawsx": AutoModelForSequenceClassificationWithRealignment,
-        "xquad": AutoModelForQuestionAnsweringWithRealignment,
-    }[name]
+    class LlamaHotfixPretrainedProxy:
+        @staticmethod
+        def from_pretrained(*args, **kwargs):
+            model = AutoModel.from_pretrained(*args, **kwargs)
+            model.save_pretrained(save_dir)
+            model = AutoModelForQuestionAnswering.from_pretrained(save_dir)
+            shutil.rmtree(save_dir)
+            return model
+
+    return LlamaHotfixPretrainedProxy
 
 
-def model_fn(task_name, with_realignment=False):
+def model_fn(task_name, with_realignment=False, simplified=False, llama_qa_hotfix_dir=None):
     """
     Get the model with the right head for the fine-tuning task
     and the right head for realignment
     """
-    if with_realignment:
+    task_name = "clirmatrix" if "clirmatrix" in task_name else task_name
+    if llama_qa_hotfix_dir:
+        AutoModelForQuestionAnswering = llama_qa_hotfix(llama_qa_hotfix_dir)
+
+    if with_realignment and simplified:
+        token_classification = get_automodel_replacement(AutoModelForTokenClassification)
+        sequence_classification = get_automodel_replacement(AutoModelForSequenceClassification)
+        question_answering = get_automodel_replacement(AutoModelForQuestionAnswering)
+        retrieval = get_automodel_replacement(AutoModelForTokenClassification)
+    elif with_realignment:
         token_classification = AutoModelForTokenClassificationWithRealignment
         sequence_classification = AutoModelForSequenceClassificationWithRealignment
-        question_answering = AutoModelForQuestionAnsweringWithRealignment
+        question_answering = AutoModelForQuestionAnsweringWithRealignment  
+        retrieval = None #Not yet implemented
     else:
         token_classification = AutoModelForTokenClassification
         sequence_classification = AutoModelForSequenceClassification
         question_answering = AutoModelForQuestionAnswering
+        retrieval = AutoModelForTokenClassification
     return {
         "wikiann": lambda *args, **kwargs: token_classification.from_pretrained(
             *args, **kwargs, num_labels=7
@@ -99,6 +122,7 @@ def model_fn(task_name, with_realignment=False):
             *args, **kwargs, num_labels=3
         ),
         "xquad": lambda *args, **kwargs: question_answering.from_pretrained(*args, **kwargs),
+        "clirmatrix": lambda *args, **kwargs: retrieval.from_pretrained(*args, **kwargs),
     }[task_name]
 
 

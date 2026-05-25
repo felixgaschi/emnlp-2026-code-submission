@@ -11,6 +11,8 @@ from transformers.trainer_pt_utils import nested_concat
 from multilingual_eval.datasets.token_classification import get_token_classification_metrics
 from multilingual_eval.datasets.xquad import get_xquad
 
+from multilingual_eval.models.simplified import SimplifiedModelForRealignment
+
 
 def evaluate_any_task(
     model,
@@ -129,6 +131,9 @@ def evaluate_xquad(
     log_in_wandb=False,
     result_store=None,
 ):
+    if isinstance(model, SimplifiedModelForRealignment):
+        model = model.model
+
     oracle = QuestionAnsweringPipeline(
         model=model, tokenizer=tokenizer, device=model.device.index, batch_size=batch_size
     )
